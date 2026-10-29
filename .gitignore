@@ -1,0 +1,21 @@
+# local secrets / config (template: .env.sample)
+.env
+env.txt
+
+# Python / Jupyter
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# local run artifacts
+wandb/
+sar-assets/
+*.safetensors
+*.ckpt
+*.pt
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
