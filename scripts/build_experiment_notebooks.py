@@ -330,6 +330,9 @@ diagram places the blocks elsewhere, change `REFINE_LEVEL` (0 = full resolution,
 4. **Confirm** (next session, `PHASE = "confirm"`): base, conv and the top two with seeds 1 and 2, then report
    mean ± SD over three seeds and paired scene CIs.
 
+`PHASE = "all"` runs screen and confirm in one session. To fit in 11 hours it halves fine-tuning to 5k steps per
+variant (`FT_STEPS_ALL`). Same design and controls, but shorter fine-tuning, so small gains may not show.
+
 Metrics include colour and structure diagnostics:
 - **ΔE** (CIE76 colour error);
 - **LF-RMSE** (error after a σ=4 Gaussian low-pass, i.e. coarse colour);
@@ -343,7 +346,7 @@ output (for the shared split file). For `PHASE = "confirm"` also attach this not
 ("code", SETUP_CELL),
 ("code", r'''
 # ---------------- configuration ----------------
-PHASE         = "screen"        # "screen": base + all variants, seed 0 | "confirm": top variants with seeds 1, 2
+PHASE         = "screen"        # "screen": base + all variants, seed 0 | "confirm": top variants with seeds 1, 2 | "all": both, one session
 CLOCK_HOURS   = 11.0
 RESERVE_MIN   = 20
 OUT           = "/kaggle/working/nb2_improve"
@@ -355,6 +358,9 @@ BASE_KW       = dict(in_ch=1, out_ch=3, n_cond=4, ch=64, mult=(1, 2, 4, 4), nres
 REFINE_LEVEL  = 2               # decoder level for the block: 2 = 64x64 features
 BASE_MIN, BASE_MAX_STEPS = 150, 200000
 FT_STEPS, FT_MAX_MIN     = 10000, 50   # equal steps for every variant; minutes is a safety cap
+FT_STEPS_ALL, FT_MAX_MIN_ALL = 5000, 25  # used instead when PHASE = "all", so 14 fine-tunes fit in one session
+if PHASE == "all":
+    FT_STEPS, FT_MAX_MIN = FT_STEPS_ALL, FT_MAX_MIN_ALL
 FT_LR_BASE, FT_LR_BLOCK  = 5e-5, 2e-4
 VARIANTS      = ["base", "conv", "convlstm", "convxlstm", "mamba", "spade"]
 CONFIRM_SEEDS = (1, 2)
@@ -433,7 +439,7 @@ BASE_CK = f"{CK_DIR}/base_pretrain.pt"
 if not os.path.exists(BASE_CK) and (p := find_prior("base_pretrain.pt")):
     shutil.copy(p, BASE_CK); shutil.copy(p + ".json", BASE_CK + ".json"); L.log(f"base restored from {p}")
 if not os.path.exists(BASE_CK):
-    assert PHASE == "screen", "confirm phase needs the screen output (base_pretrain.pt) attached"
+    assert PHASE != "confirm", "confirm phase needs the screen output (base_pretrain.pt) attached"
     L.seed_all(0)
     loader = L.make_loader(TRAIN, BATCH, True, WORKERS, drop_last=True)
     _, meta = L.train_regressor("base_pretrain", L.UNet(**BASE_KW), loader, VAL_MON, dev, BASE_MIN, BASE_MAX_STEPS,
@@ -475,7 +481,7 @@ def fine_tune(kind, seed):
     json.dump({"summary": L.summarise(pt, fid, kind, extra), "meta": meta}, open(f"{RES_DIR}/{tag}.json", "w"), indent=1, default=str)
     del model, base; torch.cuda.empty_cache()
 
-if PHASE == "screen":
+if PHASE in ("screen", "all"):
     for kind in VARIANTS:
         fine_tune(kind, 0)
     S0 = pd.DataFrame([json.load(open(f"{RES_DIR}/{k}_s0.json"))["summary"] for k in VARIANTS if os.path.exists(f"{RES_DIR}/{k}_s0.json")])
@@ -483,11 +489,12 @@ if PHASE == "screen":
     json.dump({"confirm": ["base", "conv"] + cand, "rule": "top-2 non-control variants by VALIDATION PSNR"},
               open(f"{OUT}/confirm_list.json", "w"), indent=1)
     L.log(f"selected for confirmation (by validation PSNR): {cand}")
-else:
+if PHASE in ("confirm", "all"):
     p = f"{OUT}/confirm_list.json" if os.path.exists(f"{OUT}/confirm_list.json") else find_prior("confirm_list.json")
     confirm = json.load(open(p))["confirm"]
-    for f in glob.glob(os.path.join(os.path.dirname(p), "results", "*_s0*")):
-        shutil.copy(f, RES_DIR)                         # seed-0 screen results join the confirmation table
+    if os.path.dirname(p) != OUT:
+        for f in glob.glob(os.path.join(os.path.dirname(p), "results", "*_s0*")):
+            shutil.copy(f, RES_DIR)                     # seed-0 screen results join the confirmation table
     for seed in CONFIRM_SEEDS:
         for kind in confirm:
             fine_tune(kind, seed)

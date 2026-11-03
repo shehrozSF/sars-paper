@@ -36,7 +36,22 @@ It still treats Table II's FID 215.5, heteroscedastic 17.17, colour-supervision 
 - **01 baselines** (one ~11 h session): constant colour, U-Net (L1+SSIM), Pix2Pix, CycleGAN (unpaired via previous-batch targets, no identity loss), conditional DDPM (DDIM 50), ResShift-style (pixel, T=15, κ=1.0). Time-budgeted training (`TimedRun`), one seed each + extra seeds for U-Net/Pix2Pix while time remains. Scene-disjoint split `s2o_split_scene_v1.json` (MD5-ordered scenes, 80/10/10 per season, digest), exact-duplicate audit, per-image metrics incl. ΔE, LF-RMSE, GradErr, scene-bootstrap CIs.
 - **02 spatial blocks**: Part 0 fixes + optional v3 reference with both decoders (EXPOSED); pixel U-Net base (SAR + season FiLM) 150 min; variants base/conv/convlstm/convxlstm/mamba/spade fine-tuned from the same base for 10k steps each (zero-init residual block at decoder level 2, identity checked in code); `PHASE="screen"` then `"confirm"` (top-2 by **validation** PSNR + base + conv, seeds 1, 2).
 - `.env` loader fix (2026-11-02): the old loader only searched `/kaggle/input/*/.env` and missed the new `datasets/<user>/<dataset>/` mount (`sars-attempt-1` printed "no .env found"). The builder now also searches `datasets/*/*/.env`, and 02 defaults `HF_REPO_ID` to `SotaSF/sar-to-optical-diffusion` (served offline from `sar-assets-base`), so no `.env` dataset is needed for 00/01/02.
+- `PHASE="all"` (added 2026-11-03): screen + confirm in one session, fine-tuning cut to 5k steps / 25 min per variant (`FT_STEPS_ALL`) so 14 fine-tunes + 150 min base fit in ~10.5 h. Added because RTX Pro 6000 access may end. 02 does not depend on 01: the split is deterministic and rebuilt; 01's output only skips the duplicate audit and verifies the digest.
 - Design choice to defend if asked: improvements are tested on a **pixel** U-Net, not the latent v3, because v3 is contaminated and the clean evidence shows the pixel network matches it at a fraction of the cost.
+
+## 5a. Results: 01 baselines (`kaggle-competition/baselines-01.ipynb`, 2026-11-03, ~10 h)
+Same split and same 3000 test images (23 scenes) as 02. PSNR (scene CI), Δ vs U-Net:
+- U-Net SAR-only **14.56** (13.88–15.25), 3 seeds 14.56/14.45/14.44, FID 238/317/325 (FID unstable across seeds).
+- Pix2Pix 13.85, Δ −0.71 [−1.49, −0.07]; **constant colour 13.70**, Δ −0.86 [−1.60, −0.24]; ResShift-style 12.29 (final-EMA selection; val peaked ~22k then fell); CycleGAN 11.18 but best FID 106 (SSIM 0.04); DDPM 8.53, SSIM ≈ 0 = failed run.
+- 02's base (SAR + season FiLM, otherwise same backbone/loss/EMA/selection) = 13.57 on the same images: ~1 dB below 01's U-Net and below constant colour; season helped on val (13.76 vs ~13.58) but hurt on test. Likely cause, unproven; the 02 block comparison sits on this weak base.
+- Report for Ali: `reports/report_for_ali_2026-11-03.txt`.
+
+## 5b. Results: 02 screen (`kaggle-competition/spatialpart1.ipynb`, 2026-11-03, RTX Pro 6000)
+- Split verified against 01's output: digest `b26d0fd165ee9e1f`, 248 scenes, train 218,692 pairs / 201 scenes, test 3000 imgs / 23 unseen scenes, 0 duplicates excluded.
+- v3 decoder check (EXPOSED, n=1000): adapted16 decoder PSNR 16.80 / SSIM 0.227 / LPIPS 0.887 / FID 280.3 vs tuned decoder 16.92 / 0.264 / 0.703 / **163.1**. Confirms the decoder bug on new images. This cell took ~90 min (model loading), so set `RUN_V3_REFERENCE=False` on reruns.
+- Base U-Net: val PSNR peaks 13.657 at step 8k, then falls to 13.21 by 31.6k (overfits the 201 training scenes); best checkpoint kept. Speed 0.165 s/step once data is cached (0.43 s/step for the first ~14k steps).
+- Variants (10k fine-tune steps, seed 0): **every variant's val PSNR peaks at step 1000 and declines after**, so `select="best"` returns ≈ base + 1k steps for all of them. Test PSNR 13.54–13.57 (scene CI ≈ ±0.7); paired Δ vs continued base all within ±0.03 dB, all CIs cross 0; convlstm ≈ convxlstm to 3 decimals (same init, both picked at 1k). Selected for confirm: spade, convxlstm (val +0.015 dB = noise).
+- Interpretation: null at screen; fine-tuning from an already-overfitting base can't test the blocks (they barely train before selection). A from-scratch or frozen-base design would be the informative follow-up.
 
 ## 6. Open items / next actions
 1. User runs 00 → 01 → 02 (attach 01's output to 02 for the shared split). Expect clean PSNR ≈ 13 dB; that is the point, not a bug.

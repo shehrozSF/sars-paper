@@ -1,0 +1,174 @@
+SAR-TO-OPTICAL PAPER: CLEAN RE-RUN, FIRST RESULTS
+Date: 3 November 2026
+Runs (Kaggle, RTX Pro 6000, Internet off):
+  - Notebook 01 "baselines"            ~10 h
+  - Notebook 02 "spatial blocks", screen phase   ~7.3 h
+
+
+1. WHY THESE RUNS EXIST
+-----------------------
+An audit of the three Colab notebooks found two problems that affect the
+paper's headline numbers:
+
+  a) Train/validation mismatch. The training scripts shuffle the file list
+     before train_test_split; the evaluation scripts do not. So the
+     "validation" set used for Tables II, IV and V is a different random 5%,
+     and about 95% of its images were training images. The original split
+     cannot be rebuilt (Colab's file order was never saved), so the existing
+     checkpoints cannot give clean numbers.
+
+  b) Wrong decoder for v3. v3 fine-tunes its decoder and saves it as
+     regressor_v3_final/base_vae_tuned.pth, but the Table II evaluation
+     loaded adapted16_final/base_vae.pth instead.
+
+To get honest numbers, everything is being retrained from scratch on a new
+SCENE-DISJOINT split: no test scene appears in training.
+
+  Split: 248 scenes, 270,637 image pairs
+         train 218,692 pairs from 201 scenes
+         test  3,000 images from 23 unseen scenes
+         0 exact duplicates across splits (all 270,637 optical images hashed)
+  The split file is saved and fingerprinted (digest b26d0fd165ee9e1f).
+  Notebooks 01 and 02 use the identical split and the identical 3,000 test
+  images, so their numbers can be compared directly.
+
+All metrics are per image, then averaged. Confidence intervals (CI) are 95%
+bootstrap intervals over the 23 test scenes.
+
+
+2. RESULT 1: CLEAN BASELINES (NOTEBOOK 01)
+------------------------------------------
+Every method trained from scratch on the clean split, same data pipeline,
+same U-Net backbone (17M params) where the method has one, same evaluation.
+These are compact re-implementations of each family, not the authors' code,
+so they should be labelled "-style" in the paper.
+
+  Method             Test PSNR (CI)          vs U-Net (CI)            SSIM    FID   Seeds
+  U-Net (SAR only)   14.56 (13.88 to 15.25)  --                       0.176   238   3
+  Pix2Pix            13.85 (12.90 to 14.80)  -0.71 (-1.49 to -0.07)   0.133   221   2
+  Constant colour    13.70 (13.03 to 14.34)  -0.86 (-1.60 to -0.24)   0.150   475   --
+  ResShift-style     12.29 (11.75 to 12.82)  -2.27 (-3.18 to -1.43)   0.062   212   1
+  CycleGAN           11.18 (10.42 to 11.97)  -3.38 (-4.20 to -2.51)   0.043   106   1
+  DDPM                8.53 ( 8.10 to  8.89)  -6.03 (-6.94 to -5.18)  -0.004   134   1
+
+"Constant colour" outputs the mean training colour everywhere; it uses no
+SAR information at all, so it is the floor any real model has to beat.
+
+What this shows:
+  - Only the U-Net clearly beats the constant-colour floor: +0.86 dB, and the
+    interval excludes zero. It is stable across 3 training seeds
+    (14.56 / 14.45 / 14.44, SD 0.07 dB). This is the clean headline number.
+  - Pix2Pix is roughly at the floor (13.85 vs 13.70).
+  - CycleGAN has by far the best FID (106) but the worst SSIM (0.04): its
+    images look realistic but do not match the actual scene. This is the
+    perception-distortion trade-off, measured cleanly.
+  - Clean performance on unseen scenes is about 14.5 dB, against 18.3 dB in
+    Table II. That fits the audit's conclusion that much of the old number
+    came from evaluating on training images.
+  - Most models overfit the 201 training scenes: U-Net validation PSNR peaks
+    around step 8,000 and then declines (the best checkpoint was kept).
+
+Caveats before any of this goes into the paper:
+  - DDPM (8.5 dB, SSIM about 0) is a FAILED run, not a fair result. It is
+    5 dB below the constant floor and its validation PSNR stalled near 9.5.
+    It needs fixing (or at least labelling as such), not reporting as
+    "diffusion is bad".
+  - ResShift-style used the final weights. Its validation PSNR peaked around
+    step 22,000 and fell afterwards, so best-checkpoint selection would
+    likely gain about 1 dB.
+  - FID is unstable at this size: the three U-Net seeds gave FID 238, 317
+    and 325. Differences below roughly 80 FID points should not be read as
+    real.
+  - CycleGAN, DDPM and ResShift have one seed each.
+
+
+3. RESULT 2: THE DECODER BUG, CONFIRMED ON NEW IMAGES
+-----------------------------------------------------
+Old v3, 1,000 of the new test images, only the decoder changed:
+
+                                      PSNR    SSIM    LPIPS    FID
+  v3 + adapted16 decoder (Table II)   16.80   0.227   0.887    280.3
+  v3 + its own tuned decoder          16.92   0.264   0.703    163.1
+
+With the correct decoder, v3's FID drops from 280 to 163 and LPIPS from
+0.89 to 0.70. The paper's "v3 has poor perceptual quality" (FID 215.5 in
+Table II) is mostly this bug, so the perception-distortion story built on it
+needs revisiting.
+
+CAVEAT: v3 was trained on a per-patch split of the same data and has seen
+most of these images. These two rows only show the size of the decoder bug.
+They are NOT clean results and must not be compared with the tables above.
+
+
+4. RESULT 3: SPATIAL BLOCKS (NOTEBOOK 02, SCREEN PHASE)
+------------------------------------------------------
+Five blocks were added to the U-Net decoder (at the 64x64 level) and each
+fine-tuned from the same base model for the same 10,000 steps:
+
+  conv       plain convolution stack (capacity control)
+  convlstm   recurrent refinement (PReNet-style ConvLSTM)
+  convxlstm  convolutional sLSTM (xLSTM family)
+  mamba      selective state-space scans over a pooled map
+  spade      SAR-conditioned spatial modulation (SPADE-style)
+
+Every block starts out exactly equal to the base network (checked in code),
+and "base" is also fine-tuned for 10k steps, so a block only counts as better
+if it beats simply training the base for longer. Differences are paired on
+the same test images.
+
+  Variant    Test PSNR   Change vs base (CI)           FID    Extra params
+  base         13.57     --                            196.2   --
+  conv         13.57     +0.004  (-0.025 to +0.034)    198.3   0.95 M
+  convlstm     13.55     -0.018  (-0.053 to +0.014)    197.6   1.25 M
+  convxlstm    13.55     -0.018  (-0.053 to +0.014)    197.6   1.25 M
+  mamba        13.54     -0.027  (-0.071 to +0.024)    195.9   0.18 M
+  spade        13.54     -0.028  (-0.068 to +0.015)    196.8   0.80 M
+
+No block improved PSNR, colour error or edge error: every difference is
+under 0.03 dB and every interval includes zero.
+
+This is NOT yet evidence that the blocks are useless, for two reasons:
+
+  a) The base model is weak. Notebook 02's base uses SAR plus a season input;
+     notebook 01's U-Net uses SAR only, with the same backbone, loss and
+     training rules. On the same test images, 02's base scores 13.57 dB:
+     about 1 dB below 01's U-Net (14.56) and slightly BELOW the constant-
+     colour floor (13.70). On the validation scenes the season input helped
+     slightly, so it may be fitting season-level colour that does not carry
+     over to the test scenes. That is a likely explanation, not yet a proven
+     one.
+
+  b) The blocks barely trained. For every variant, validation PSNR was
+     highest at the first check (step 1,000) and only declined after that,
+     because the base was already overfitting. So each selected checkpoint is
+     essentially "base + 1,000 steps", before the new block had learned
+     much. That is why all six score almost the same.
+
+
+5. WHAT THIS MEANS FOR THE PAPER
+--------------------------------
+  - Tables II, IV and V cannot stay as they are: they were measured mostly
+    on training images.
+  - The honest headline: on unseen scenes, a plain SAR-only U-Net reaches
+    14.56 dB, only 0.86 dB above outputting the mean colour everywhere. The
+    GAN and diffusion baselines do not beat that floor on PSNR.
+  - This supports the paper's core diagnosis that colour is the main error
+    and is poorly determined by SAR on new scenes. The clean benchmark plus
+    the error analysis is a stronger paper than the old 18.3 dB number.
+  - The decoder fix changes v3's perceptual numbers a lot (FID 280 -> 163 on
+    these images), so the perception-distortion argument needs rewriting.
+    CycleGAN (FID 106, SSIM 0.04) now gives a clean example of that
+    trade-off.
+
+
+6. NEXT STEPS
+-------------
+  1. Fix and rerun the weak baselines: DDPM (failed run) and ResShift-style
+     (select the best checkpoint), ideally with 3 seeds for every method.
+  2. Spatial blocks: redo the comparison on the SAR-only U-Net (no season
+     input), training each block from scratch with 3 seeds (about 7 h on the
+     same GPU). Running the planned confirm phase on the current base would
+     only repeat the problems in section 4.
+  3. A small matched check of season input on/off would settle whether it
+     really costs about 1 dB on unseen scenes.
+  4. The LaTeX source is needed to start rewriting the affected sections.
