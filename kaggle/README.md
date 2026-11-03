@@ -37,6 +37,14 @@ Each run has to stay under Kaggle's ~20 GB output limit, which is why the assets
    - locates the attached datasets.
 4. For long jobs, use **Save Version → Save & Run All**. Sessions stop at 12 h.
 
+## New experiment notebooks (clean protocol, trained from scratch)
+| Notebook | What it does | Session |
+|---|---|---|
+| `01_baselines_comparison_kaggle` | Constant colour, U-Net, Pix2Pix, CycleGAN, DDPM, ResShift-style, all on one scene-disjoint split; scene-bootstrap CIs; extra seeds for U-Net/Pix2Pix while time remains | one ~11 h session |
+| `02_spatial_blocks_kaggle` | Fixes from the audit, v3 wrong-vs-right decoder reference, then a pixel U-Net base and decoder blocks (Conv2D, ConvLSTM, ConvxLSTM, Mamba, SPADE); `PHASE="screen"` then `PHASE="confirm"` | ~7 h screen + ~5 h confirm |
+
+Both embed `src/s2o_lib.py` (shared split, models, training loops, metrics). After editing the library, rebuild the notebooks with `python scripts/build_experiment_notebooks.py`, and run `python kaggle/src/test_s2o_lib.py` (CPU smoke test). Attach notebook 1's output to notebook 2 so both use the same split file; the digest is checked.
+
 ## What was changed
 - **Paths:**
   - `/content/` → `/kaggle/working/`;
